@@ -3,159 +3,160 @@ import time
 import threading
 import tkinter as tk
 from tkinter import messagebox
-from pynput import keyboard as pynput_keyboard
+
+try:
+    from pynput import keyboard as pynput_keyboard
+except Exception:
+    pynput_keyboard = None
+
 
 running = False
 hotkey_listener = None
-capture_listener = None
+capturing_for = None
 
 MAX_ALLOWED = 100
-
 pyautogui.FAILSAFE = True  # emergency stop: move mouse to top-left corner
 
 
 # -----------------------------
-# Auto typing logic
+# Safe UI helpers
 # -----------------------------
 
 def set_status(text):
     app.after(0, lambda: status_label.config(text=text))
 
 
+def show_error(title, message):
+    app.after(0, lambda: messagebox.showerror(title, message))
+
+
+# -----------------------------
+# Auto typing logic
+# -----------------------------
+
 def send_line(text):
     pyautogui.write(text, interval=0.01)
     pyautogui.press("enter")
 
 
-def run_typer():
-    global running
-
+def get_settings():
     text = text_entry.get().strip()
     buy_text = buy_entry.get().strip()
 
     try:
-        delay = float(delay_entry.get())
-        max_times = int(times_entry.get())
-        buy_every = int(buy_every_entry.get())
+        delay = float(delay_entry.get().strip())
+        repeat_count = int(repeat_entry.get().strip())
+        buy_every = int(buy_every_entry.get().strip())
     except ValueError:
-        app.after(0, lambda: messagebox.showerror(
-            "Error",
-            "Delay, repeat count, and buy every must be numbers."
-        ))
-        running = False
-        return
-
-    if max_times > MAX_ALLOWED:
-        app.after(0, lambda: messagebox.showerror(
-            "Limit",
-            f"Max allowed is {MAX_ALLOWED} per run."
-        ))
-        running = False
-        return
+        messagebox.showerror("Error", "Delay, repeat count, and buy after every must be numbers.")
+        return None
 
     if not text:
-        app.after(0, lambda: messagebox.showerror(
-            "Error",
-            "Main text cannot be empty."
-        ))
-        running = False
-        return
+        messagebox.showerror("Error", "Main text cannot be empty.")
+        return None
 
-    set_status("Starting in 3 seconds. Click the input box now...")
+    if repeat_count < 1:
+        messagebox.showerror("Error", "Repeat count must be at least 1.")
+        return None
+
+    if repeat_count > MAX_ALLOWED:
+        messagebox.showerror("Limit", f"Max allowed is {MAX_ALLOWED} per run.")
+        return None
+
+    if delay < 0.2:
+        messagebox.showerror("Error", "Delay must be at least 0.2 seconds.")
+        return None
+
+    if buy_every < 0:
+        messagebox.showerror("Error", "Buy after every cannot be negative.")
+        return None
+
+    return {
+        "text": text,
+        "buy_text": buy_text,
+        "delay": delay,
+        "repeat_count": repeat_count,
+        "buy_every": buy_every,
+    }
+
+
+def typer_thread(settings):
+    global running
+
+    set_status("Starting in 3 seconds. Click the input/chat box now...")
     time.sleep(3)
 
     count = 0
 
-    while running and count < max_times:
-        send_line(text)
-        count += 1
-        set_status(f"Sent {count}/{max_times}")
+    try:
+        while running and count < settings["repeat_count"]:
+            send_line(settings["text"])
+            count += 1
+            set_status(f"Sent {count}/{settings['repeat_count']}")
 
-        time.sleep(delay)
+            time.sleep(settings["delay"])
 
-        if running and buy_text and buy_every > 0 and count % buy_every == 0:
-            send_line(buy_text)
-            set_status(f"Sent buy command after {count}")
-            time.sleep(delay)
+            if (
+                running
+                and settings["buy_text"]
+                and settings["buy_every"] > 0
+                and count % settings["buy_every"] == 0
+            ):
+                send_line(settings["buy_text"])
+                set_status(f"Sent buy command after {count}")
+                time.sleep(settings["delay"])
+
+    except pyautogui.FailSafeException:
+        set_status("Emergency stopped. Mouse moved to top-left corner.")
+    except Exception as e:
+        show_error("Typing Error", str(e))
 
     running = False
     set_status("Stopped.")
 
 
-def start():
+def start_typing():
     global running
 
-    if not running:
-        running = True
-        set_status("Started.")
-        threading.Thread(target=run_typer, daemon=True).start()
+    if running:
+        return
+
+    settings = get_settings()
+    if settings is None:
+        return
+
+    running = True
+    set_status("Started.")
+    threading.Thread(target=typer_thread, args=(settings,), daemon=True).start()
 
 
-def stop():
+def stop_typing():
     global running
-
     running = False
     set_status("Stop pressed.")
 
 
 # -----------------------------
-# Shortcut capture logic
+# Shortcut logic
 # -----------------------------
 
-MODIFIERS = ["<cmd>", "<ctrl>", "<alt>", "<shift>"]
+def stop_hotkey_listener():
+    global hotkey_listener
 
-
-def key_to_text(key):
     try:
-        if isinstance(key, pynput_keyboard.KeyCode):
-            if key.char:
-                return key.char.lower()
+        if hotkey_listener is not None:
+            hotkey_listener.stop()
+            hotkey_listener = None
     except Exception:
-        pass
-
-    name = getattr(key, "name", str(key).replace("Key.", ""))
-
-    modifier_map = {
-        "cmd": "<cmd>",
-        "cmd_l": "<cmd>",
-        "cmd_r": "<cmd>",
-        "ctrl": "<ctrl>",
-        "ctrl_l": "<ctrl>",
-        "ctrl_r": "<ctrl>",
-        "alt": "<alt>",
-        "alt_l": "<alt>",
-        "alt_r": "<alt>",
-        "shift": "<shift>",
-        "shift_l": "<shift>",
-        "shift_r": "<shift>",
-    }
-
-    if name in modifier_map:
-        return modifier_map[name]
-
-    return f"<{name}>"
-
-
-def build_combo(keys):
-    parts = []
-
-    for mod in MODIFIERS:
-        if mod in keys:
-            parts.append(mod)
-
-    for key in keys:
-        if key not in MODIFIERS:
-            parts.append(key)
-
-    return "+".join(parts)
-
-
-def has_normal_key(keys):
-    return any(key not in MODIFIERS for key in keys)
+        hotkey_listener = None
 
 
 def install_hotkeys():
     global hotkey_listener
+
+    if pynput_keyboard is None:
+        set_status("pynput not available. Buttons still work.")
+        return
 
     start_combo = start_shortcut_var.get().strip()
     stop_combo = stop_shortcut_var.get().strip()
@@ -171,165 +172,222 @@ def install_hotkeys():
         return
 
     try:
-        if hotkey_listener is not None:
-            hotkey_listener.stop()
-            hotkey_listener = None
+        stop_hotkey_listener()
 
         hotkey_listener = pynput_keyboard.GlobalHotKeys({
-            start_combo: start,
-            stop_combo: stop
+            start_combo: start_typing,
+            stop_combo: stop_typing,
         })
 
         hotkey_listener.start()
         set_status(f"Shortcuts ready: Start {start_combo} | Stop {stop_combo}")
 
     except Exception as e:
-        messagebox.showerror(
-            "Shortcut Error",
-            f"Could not set shortcut.\n\nTry something like:\n<cmd>+<shift>+s\n<cmd>+<shift>+x\n\nError:\n{e}"
+        set_status("Shortcut permission issue. Buttons still work.")
+        messagebox.showwarning(
+            "Shortcut Warning",
+            "Could not activate global shortcuts.\n\n"
+            "The Start/Stop buttons will still work.\n\n"
+            "On Mac, allow the app in:\n"
+            "System Settings → Privacy & Security → Input Monitoring\n"
+            "and Accessibility.\n\n"
+            f"Details: {e}"
         )
 
 
-def capture_shortcut(which):
-    global capture_listener, hotkey_listener
+def begin_capture(which):
+    global capturing_for
 
-    if hotkey_listener is not None:
-        hotkey_listener.stop()
-        hotkey_listener = None
-
-    if capture_listener is not None:
-        capture_listener.stop()
-        capture_listener = None
+    capturing_for = which
 
     if which == "start":
-        target_var = start_shortcut_var
-        label = "Start"
+        start_shortcut_var.set("Press shortcut now...")
+        set_status("Press the START shortcut now.")
     else:
-        target_var = stop_shortcut_var
-        label = "Stop"
+        stop_shortcut_var.set("Press shortcut now...")
+        set_status("Press the STOP shortcut now.")
 
-    pressed_keys = []
+    # Stop global listener while capturing so it does not fight with Tkinter
+    stop_hotkey_listener()
 
-    target_var.set("Press shortcut now...")
-    set_status(f"Press the keys for {label} shortcut now.")
+    app.focus_force()
+    app.bind_all("<KeyPress>", capture_keypress)
 
-    def on_press(key):
-        key_text = key_to_text(key)
 
-        if key_text and key_text not in pressed_keys:
-            pressed_keys.append(key_text)
+def is_modifier_key(keysym):
+    key = keysym.lower()
+    return key in [
+        "shift_l", "shift_r",
+        "control_l", "control_r",
+        "alt_l", "alt_r",
+        "option_l", "option_r",
+        "meta_l", "meta_r",
+        "command", "command_l", "command_r",
+        "super_l", "super_r",
+    ]
 
-        combo = build_combo(pressed_keys)
 
-        if combo:
-            app.after(0, lambda: target_var.set(combo))
+def key_name_from_event(event):
+    keysym = event.keysym.lower()
 
-    def on_release(key):
-        key_text = key_to_text(key)
+    special_keys = {
+        "return": "enter",
+        "escape": "esc",
+        "backspace": "backspace",
+        "delete": "delete",
+        "space": "space",
+        "tab": "tab",
+        "up": "up",
+        "down": "down",
+        "left": "left",
+        "right": "right",
+    }
 
-        if has_normal_key(pressed_keys):
-            combo = build_combo(pressed_keys)
+    if keysym in special_keys:
+        return f"<{special_keys[keysym]}>"
 
-            def save_combo():
-                target_var.set(combo)
-                set_status(f"{label} shortcut saved: {combo}")
-                install_hotkeys()
+    if event.char and len(event.char) == 1 and event.char.isprintable():
+        return event.char.lower()
 
-            app.after(0, save_combo)
-            return False
+    return f"<{keysym}>"
 
-        if key_text in pressed_keys:
-            pressed_keys.remove(key_text)
 
-    capture_listener = pynput_keyboard.Listener(
-        on_press=on_press,
-        on_release=on_release
-    )
+def combo_from_event(event):
+    mods = []
 
-    capture_listener.start()
+    # Common Tk modifier state bits
+    shift_pressed = bool(event.state & 0x0001)
+    ctrl_pressed = bool(event.state & 0x0004)
+    alt_pressed = bool(event.state & 0x0008)
+
+    # Command key bit can vary across macOS/Tk builds
+    cmd_pressed = bool(event.state & 0x0010) or bool(event.state & 0x0040) or bool(event.state & 0x0080)
+
+    if ctrl_pressed:
+        mods.append("<ctrl>")
+    if alt_pressed:
+        mods.append("<alt>")
+    if shift_pressed:
+        mods.append("<shift>")
+    if cmd_pressed:
+        mods.append("<cmd>")
+
+    key = key_name_from_event(event)
+
+    # Ignore modifier-only press
+    if key in ["<ctrl>", "<alt>", "<shift>", "<cmd>"]:
+        return None
+
+    # Avoid shortcut with no modifier, like just "s"
+    if not mods:
+        return None
+
+    return "+".join(mods + [key])
+
+
+def capture_keypress(event):
+    global capturing_for
+
+    if capturing_for is None:
+        return "break"
+
+    if is_modifier_key(event.keysym):
+        return "break"
+
+    combo = combo_from_event(event)
+
+    if combo is None:
+        set_status("Use a combo like Control + Shift + S.")
+        return "break"
+
+    if capturing_for == "start":
+        start_shortcut_var.set(combo)
+        set_status(f"Start shortcut saved: {combo}")
+    else:
+        stop_shortcut_var.set(combo)
+        set_status(f"Stop shortcut saved: {combo}")
+
+    capturing_for = None
+    app.unbind_all("<KeyPress>")
+
+    install_hotkeys()
+    return "break"
+
+
+def save_manual_shortcuts():
+    install_hotkeys()
+
+
+def on_close():
+    stop_hotkey_listener()
+    app.destroy()
 
 
 # -----------------------------
-# App UI
+# UI
 # -----------------------------
 
 app = tk.Tk()
 app.title("Auto Typer By Syed")
-app.geometry("500x610")
+app.geometry("520x620")
 app.resizable(False, False)
 
-tk.Label(app, text="Main Text:").pack(pady=(12, 0))
-text_entry = tk.Entry(app, width=58)
+title = tk.Label(app, text="Auto Typer", font=("Arial", 16, "bold"))
+title.pack(pady=(12, 5))
+
+tk.Label(app, text="Main Text:").pack()
+text_entry = tk.Entry(app, width=62)
 text_entry.insert(0, "!stun 467590746493419520")
-text_entry.pack()
+text_entry.pack(pady=(0, 10))
 
-tk.Label(app, text="Buy Text:").pack(pady=(10, 0))
-buy_entry = tk.Entry(app, width=58)
+tk.Label(app, text="Buy Text:").pack()
+buy_entry = tk.Entry(app, width=62)
 buy_entry.insert(0, "!buy stun 40")
-buy_entry.pack()
+buy_entry.pack(pady=(0, 10))
 
-tk.Label(app, text="Delay seconds:").pack(pady=(10, 0))
-delay_entry = tk.Entry(app, width=18)
+tk.Label(app, text="Delay seconds:").pack()
+delay_entry = tk.Entry(app, width=18, justify="center")
 delay_entry.insert(0, "1.8")
-delay_entry.pack()
+delay_entry.pack(pady=(0, 10))
 
-tk.Label(app, text="Repeat count:").pack(pady=(10, 0))
-times_entry = tk.Entry(app, width=18)
-times_entry.insert(0, "50")
-times_entry.pack()
+tk.Label(app, text="Repeat count:").pack()
+repeat_entry = tk.Entry(app, width=18, justify="center")
+repeat_entry.insert(0, "50")
+repeat_entry.pack(pady=(0, 10))
 
-tk.Label(app, text="Buy after every:").pack(pady=(10, 0))
-buy_every_entry = tk.Entry(app, width=18)
+tk.Label(app, text="Buy after every:").pack()
+buy_every_entry = tk.Entry(app, width=18, justify="center")
 buy_every_entry.insert(0, "20")
-buy_every_entry.pack()
+buy_every_entry.pack(pady=(0, 15))
 
-tk.Label(app, text="Start Shortcut:").pack(pady=(18, 0))
-start_shortcut_var = tk.StringVar(value="<cmd>+<shift>+s")
-start_shortcut_box = tk.Entry(
-    app,
-    width=28,
-    textvariable=start_shortcut_var,
-    justify="center",
-    state="readonly"
-)
-start_shortcut_box.pack(pady=4)
-start_shortcut_box.bind("<Button-1>", lambda event: capture_shortcut("start"))
+tk.Label(app, text="Start Shortcut:").pack()
+start_shortcut_var = tk.StringVar(value="<ctrl>+<shift>+s")
+start_shortcut_box = tk.Entry(app, width=32, textvariable=start_shortcut_var, justify="center")
+start_shortcut_box.pack(pady=(0, 5))
+start_shortcut_box.bind("<Button-1>", lambda event: begin_capture("start"))
 
-tk.Button(
-    app,
-    text="Set Start Shortcut",
-    width=22,
-    command=lambda: capture_shortcut("start")
-).pack(pady=4)
+tk.Button(app, text="Click to Set Start Shortcut", width=28, command=lambda: begin_capture("start")).pack(pady=(0, 12))
 
-tk.Label(app, text="Stop Shortcut:").pack(pady=(14, 0))
-stop_shortcut_var = tk.StringVar(value="<cmd>+<shift>+x")
-stop_shortcut_box = tk.Entry(
-    app,
-    width=28,
-    textvariable=stop_shortcut_var,
-    justify="center",
-    state="readonly"
-)
-stop_shortcut_box.pack(pady=4)
-stop_shortcut_box.bind("<Button-1>", lambda event: capture_shortcut("stop"))
+tk.Label(app, text="Stop Shortcut:").pack()
+stop_shortcut_var = tk.StringVar(value="<ctrl>+<shift>+x")
+stop_shortcut_box = tk.Entry(app, width=32, textvariable=stop_shortcut_var, justify="center")
+stop_shortcut_box.pack(pady=(0, 5))
+stop_shortcut_box.bind("<Button-1>", lambda event: begin_capture("stop"))
 
-tk.Button(
-    app,
-    text="Set Stop Shortcut",
-    width=22,
-    command=lambda: capture_shortcut("stop")
-).pack(pady=4)
+tk.Button(app, text="Click to Set Stop Shortcut", width=28, command=lambda: begin_capture("stop")).pack(pady=(0, 12))
+
+tk.Button(app, text="Save Shortcuts", width=20, command=save_manual_shortcuts).pack(pady=(0, 15))
 
 button_frame = tk.Frame(app)
-button_frame.pack(pady=18)
+button_frame.pack(pady=5)
 
-tk.Button(button_frame, text="Start", width=14, command=start).grid(row=0, column=0, padx=8)
-tk.Button(button_frame, text="Stop", width=14, command=stop).grid(row=0, column=1, padx=8)
+tk.Button(button_frame, text="Start", width=16, command=start_typing).grid(row=0, column=0, padx=10)
+tk.Button(button_frame, text="Stop", width=16, command=stop_typing).grid(row=0, column=1, padx=10)
 
-status_label = tk.Label(app, text="Ready. Click shortcut box to change keys.")
-status_label.pack(pady=10)
+status_label = tk.Label(app, text="Ready. Use buttons or shortcuts.", wraplength=480)
+status_label.pack(pady=15)
+
+app.protocol("WM_DELETE_WINDOW", on_close)
 
 install_hotkeys()
-
 app.mainloop()
