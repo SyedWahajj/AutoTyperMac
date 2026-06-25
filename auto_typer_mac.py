@@ -14,7 +14,7 @@ running = False
 hotkey_listener = None
 capturing_for = None
 
-MAX_ALLOWED = 100
+MAX_ALLOWED = 100000000
 pyautogui.FAILSAFE = True  # emergency stop: move mouse to top-left corner
 
 
