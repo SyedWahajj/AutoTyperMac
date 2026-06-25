@@ -1,0 +1,39 @@
+name: Build Mac App
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build-mac:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install packages
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install pyautogui pynput pyinstaller
+
+      - name: Build Mac app
+        run: |
+          python3 -m PyInstaller --windowed --name AutoTyper auto_typer_mac.py
+
+      - name: Zip app
+        run: |
+          cd dist
+          zip -r AutoTyper-mac.zip AutoTyper.app
+
+      - name: Upload Mac app
+        uses: actions/upload-artifact@v4
+        with:
+          name: AutoTyper-mac
+          path: dist/AutoTyper-mac.zip
